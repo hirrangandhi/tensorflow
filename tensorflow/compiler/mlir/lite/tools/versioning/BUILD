@@ -38,6 +38,7 @@ tf_cc_test(
     name = "versioning_test",
     srcs = [
         "op_version_test.cc",
+        "runtime_version_test.cc",
     ],
     deps = [
         ":op_signature",
