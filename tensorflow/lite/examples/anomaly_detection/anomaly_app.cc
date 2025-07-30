@@ -122,6 +122,8 @@ std::vector<std::vector<float>> predict_tflite(const std::string& model_path, co
         std::cerr << "Failed to load model: " << model_path << std::endl;
         return results;
     }
+    printf("Loaded model: %s\n", model_path.c_str());
+    
     tflite::ops::builtin::BuiltinOpResolver resolver;
     std::unique_ptr<tflite::Interpreter> interpreter;
     if (tflite::InterpreterBuilder(*model, resolver)(&interpreter) != kTfLiteOk || !interpreter) {
@@ -266,15 +268,15 @@ int main(int argc, char* argv[]) {
         tflite::Flag::CreateFlag("threads", &settings.num_threads, "Number of threads"),
         tflite::Flag::CreateFlag("allow_fp16", &settings.allow_fp16, "Allow float16 precision")
     };
-    // Add delegate flags
-    for (const auto& f : delegate_providers.CreateAllDelegates()) {
-        // No-op, flags are already appended in DelegateProviders constructor
-    }
+
     if (!tflite::Flags::Parse(&argc, const_cast<const char**>(argv), flags)) {
         std::cerr << "Failed to parse command-line flags." << std::endl;
         display_usage(delegate_providers);
         return 1;
     }
+    // Parse delegate flags from command line (ensures external delegates are recognized)
+    delegate_providers.InitFromCmdlineArgs(&argc, const_cast<const char**>(argv));
+
     // Check required flags
     if (settings.json_path.empty() || settings.cpu_model_path.empty() || settings.mem_model_path.empty() || settings.output_csv.empty()) {
         std::cerr << "Error: All of --input, --cpu_model, --memory_model, and --output_csv must be provided." << std::endl;
