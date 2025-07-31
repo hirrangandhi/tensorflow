@@ -123,7 +123,7 @@ std::vector<std::vector<float>> predict_tflite(const std::string& model_path, co
         return results;
     }
     printf("Loaded model: %s\n", model_path.c_str());
-    
+
     tflite::ops::builtin::BuiltinOpResolver resolver;
     std::unique_ptr<tflite::Interpreter> interpreter;
     if (tflite::InterpreterBuilder(*model, resolver)(&interpreter) != kTfLiteOk || !interpreter) {
@@ -145,38 +145,66 @@ std::vector<std::vector<float>> predict_tflite(const std::string& model_path, co
         return results;
     }
     int input_idx = interpreter->inputs()[0];
+    TfLiteIntArray* input_dims = interpreter->tensor(input_idx)->dims;
+    int input_rank = input_dims->size;
     int feature_dim = data[0].size();
-    int batch_size = data.size();
-    // Resize input tensor to {batch_size, feature_dim}
-    std::vector<int> new_shape = {static_cast<int>(batch_size), static_cast<int>(feature_dim)};
-    if (interpreter->ResizeInputTensor(input_idx, new_shape) != kTfLiteOk) {
-        std::cerr << "Failed to resize input tensor for batch." << std::endl;
+    // Model input shape: e.g., [batch, feature_dim]
+    int model_batch = input_dims->data[0];
+    int model_feature_dim = (input_rank > 1) ? input_dims->data[1] : 1;
+    if (model_feature_dim != feature_dim) {
+        std::cerr << "Model expects feature_dim=" << model_feature_dim << ", but got " << feature_dim << std::endl;
         return results;
     }
-    if (interpreter->AllocateTensors() != kTfLiteOk) {
-        std::cerr << "Failed to allocate tensors after resize for batch." << std::endl;
-        return results;
-    }
-    float* input_tensor = interpreter->typed_tensor<float>(input_idx);
-    // Copy all data into input tensor
-    for (int i = 0; i < batch_size; ++i) {
-        for (int j = 0; j < feature_dim; ++j) {
-            input_tensor[i * feature_dim + j] = data[i][j];
+    // If model_batch == -1, dynamic batch size is allowed
+    bool dynamic_batch = (model_batch == -1 || model_batch == 1);
+    int total = data.size();
+    int batch_size = (dynamic_batch) ? total : model_batch;
+    int num_batches = (total + batch_size - 1) / batch_size;
+    for (int b = 0; b < num_batches; ++b) {
+        int this_batch = std::min(batch_size, total - b * batch_size);
+        // Only resize if dynamic batch, otherwise must match model_batch
+        if (dynamic_batch) {
+            std::vector<int> new_shape = {this_batch, feature_dim};
+            if (interpreter->ResizeInputTensor(input_idx, new_shape) != kTfLiteOk) {
+                std::cerr << "Failed to resize input tensor for batch." << std::endl;
+                return results;
+            }
+            if (interpreter->AllocateTensors() != kTfLiteOk) {
+                std::cerr << "Failed to allocate tensors after resize for batch." << std::endl;
+                return results;
+            }
+        } else {
+            if (this_batch != model_batch) {
+                // Pad with zeros if not enough data for last batch
+                std::cerr << "Warning: last batch smaller than model batch size, padding with zeros." << std::endl;
+            }
         }
-    }
-    if (interpreter->Invoke() != kTfLiteOk) {
-        std::cerr << "Failed to invoke interpreter for batch." << std::endl;
-        return results;
-    }
-    int output_idx = interpreter->outputs()[0];
-    float* output_tensor = interpreter->typed_output_tensor<float>(output_idx);
-    // Output tensor shape: [batch_size, feature_dim]
-    for (int i = 0; i < batch_size; ++i) {
-        std::vector<float> output_row(feature_dim);
-        for (int j = 0; j < feature_dim; ++j) {
-            output_row[j] = output_tensor[i * feature_dim + j];
+        float* input_tensor = interpreter->typed_tensor<float>(input_idx);
+        // Copy data into input tensor
+        for (int i = 0; i < batch_size; ++i) {
+            int data_idx = b * batch_size + i;
+            for (int j = 0; j < feature_dim; ++j) {
+                if (data_idx < total) {
+                    input_tensor[i * feature_dim + j] = data[data_idx][j];
+                } else {
+                    input_tensor[i * feature_dim + j] = 0.0f; // pad
+                }
+            }
         }
-        results.push_back(output_row);
+        if (interpreter->Invoke() != kTfLiteOk) {
+            std::cerr << "Failed to invoke interpreter for batch." << std::endl;
+            return results;
+        }
+        int output_idx = interpreter->outputs()[0];
+        float* output_tensor = interpreter->typed_output_tensor<float>(output_idx);
+        // Output tensor shape: [batch_size, feature_dim]
+        for (int i = 0; i < this_batch; ++i) {
+            std::vector<float> output_row(feature_dim);
+            for (int j = 0; j < feature_dim; ++j) {
+                output_row[j] = output_tensor[i * feature_dim + j];
+            }
+            results.push_back(output_row);
+        }
     }
     return results;
 }
